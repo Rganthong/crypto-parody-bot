@@ -7,10 +7,10 @@ const fs = require("fs");
 const INTERVAL_MINUTES = 60 / 4; // 4 akun per jam (1 akun tiap 15 menit)
 const DELAY_PER_ACCOUNT = INTERVAL_MINUTES * 60 * 1000;
 const targetAccounts = [
+  "whale_alert",
   "BitcoinMagazine",
-  "CoinDesk",
   "lookonchain",
-  "whale_alert"
+  "CoinDesk"
 ];
 
 const twitterClient = new TwitterApi({
@@ -118,3 +118,4 @@ const start = async () => {
 };
 
 start();
+
