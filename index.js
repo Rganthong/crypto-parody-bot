@@ -56,6 +56,7 @@ async function getLatestTweet(username) {
     return tweets.data.data?.[0];
   } catch (err) {
     log(`[${username}] ⚠️ Failed to fetch tweet: ${err.response?.status || err.message}`);
+    console.error(err);
     return null;
   }
 }
@@ -96,11 +97,33 @@ async function generateParodyTweet(originalText) {
         await delay(30000);
       } else {
         log(`[AI] Generation failed: ${err.message}`);
+        console.error(err);
         return null;
       }
     }
   }
   return null;
+}
+
+async function postWithRetry(text, tweetUrl, maxRetries = 3) {
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      const result = await client.v2.tweet({
+        text: `${text}\n\n${tweetUrl}`,
+      });
+      return result;
+    } catch (err) {
+      log(`⚠️ Post attempt ${attempt} failed: ${err.message}`);
+      console.error(err);
+      if (attempt < maxRetries) {
+        log(`🔁 Retrying in 10s...`);
+        await delay(10000);
+      } else {
+        log(`❌ All retry attempts failed.`);
+        return null;
+      }
+    }
+  }
 }
 
 async function runForAccount(username) {
@@ -120,16 +143,13 @@ async function runForAccount(username) {
     return;
   }
 
-  try {
-    const tweetUrl = `https://twitter.com/${username}/status/${latestTweet.id}`;
-    const result = await client.v2.tweet({
-      text: `${parody}\n\n${tweetUrl}`,
-    });
-
+  const tweetUrl = `https://twitter.com/${username}/status/${latestTweet.id}`;
+  const result = await postWithRetry(parody, tweetUrl);
+  if (result) {
     log(`[${username}] ✅ Parody posted: ${result.data.id}`);
     saveUsedTweet(latestTweet.id);
-  } catch (err) {
-    log(`[${username}] ❌ Failed to post: ${err.message}`);
+  } else {
+    log(`[${username}] ❌ Failed to post after retries.`);
   }
 }
 
@@ -142,6 +162,9 @@ async function main() {
   }
   log("✅ All done.");
 }
+
+main();
+
 
 main();
 
