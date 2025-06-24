@@ -1,4 +1,3 @@
-// index.js
 const { TwitterApi } = require('twitter-api-v2');
 const axios = require('axios');
 const fs = require('fs');
@@ -37,15 +36,14 @@ function log(message) {
   fs.appendFileSync(logFile, line + '\n');
 }
 
-// 🔥 Broken English + Toxic Maximalist + Meme Shitpost Prompt
 async function generateParody(text) {
   try {
     const response = await axios.post(
       'https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta',
       {
-        inputs: `Turn this crypto tweet into a short, extremely toxic maximalist shitpost with broken English and meme vibes. Include conspiracy, cult-like sarcasm, and utter absurdity. Under 200 characters:\n\n"${text}"`,
+        inputs: `Rewrite this crypto tweet as a short, absurd, toxic maximalist shitpost in broken English. Under 200 characters:\n\n"${text}"`,
         parameters: {
-          max_new_tokens: 50,
+          max_new_tokens: 60,
           return_full_text: false
         }
       },
@@ -74,14 +72,16 @@ async function processAccount(username) {
     }
 
     const tweets = await client.v2.userTimeline(user.data.id, {
-      max_results: 1,
-      exclude: "retweets,replies",
-      "tweet.fields": "created_at"
+      max_results: 5,
+      "tweet.fields": "created_at,in_reply_to_user_id"
     });
 
-    const latest = tweets.data?.data?.[0];
+    const latest = tweets.data?.data?.find(
+      (t) => !t.text.startsWith('RT') && !t.in_reply_to_user_id
+    );
+
     if (!latest) {
-      log(`[${username}] No recent tweet found.`);
+      log(`[${username}] No original tweet found.`);
       return;
     }
 
@@ -91,18 +91,19 @@ async function processAccount(username) {
     }
 
     const tweetText = latest.text;
-    const tweetUrl = `https://twitter.com/${username}/status/${latest.id}`;
-
     const parody = await generateParody(tweetText);
+
     if (!parody) {
       log(`[${username}] ⚠️ Parody generation failed, skipping.`);
       return;
     }
 
-    const post = `${parody}\n\n${tweetUrl}`;
-    await client.v2.tweet(post);
-    log(`[${username}] ✅ Parody posted.`);
+    // ✅ Quote tweet asli
+    await client.v2.tweet(parody, {
+      quote_tweet_id: latest.id
+    });
 
+    log(`[${username}] ✅ Quote parody posted.`);
     tweetCache[username] = latest.id;
     fs.writeFileSync(cacheFile, JSON.stringify(tweetCache, null, 2));
 
@@ -129,3 +130,4 @@ async function runCycle() {
 }
 
 runCycle();
+
