@@ -1,4 +1,3 @@
-// crypto-parody-bot/index.js
 require("dotenv").config();
 const axios = require("axios");
 const { TwitterApi } = require("twitter-api-v2");
@@ -45,24 +44,32 @@ const hybridPrompt = (text) => {
 const generateParody = async (text) => {
   try {
     const res = await axios.post(
-      "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
+      "https://api.openai.com/v1/chat/completions",
       {
-        inputs: hybridPrompt(text),
-        parameters: {
-          max_new_tokens: 80,
-          return_full_text: false,
-        },
+        model: "gpt-3.5-turbo",
+        messages: [
+          {
+            role: "system",
+            content: "You are a sarcastic and imaginative crypto Twitter shitposter."
+          },
+          {
+            role: "user",
+            content: hybridPrompt(text)
+          }
+        ],
+        temperature: 1.1,
+        max_tokens: 100,
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.HUGGINGFACE_TOKEN}`,
+          Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
           "Content-Type": "application/json",
         },
         timeout: 20000,
       }
     );
-    const out = res.data?.[0]?.generated_text;
-    return out?.replace(/\n/g, " ").slice(0, 240);
+    const out = res.data.choices[0].message.content.trim();
+    return out.slice(0, 240);
   } catch (e) {
     log(`[AI] Error: ${e.message}`);
     return null;
@@ -110,7 +117,3 @@ const start = async () => {
 };
 
 start();
-
-start();
-
-
