@@ -1,17 +1,16 @@
 {
   "name": "crypto-parody-bot",
   "version": "1.0.0",
-  "description": "",
+  "description": "A Twitter bot that quote tweets crypto updates with parody using Hugging Face.",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node index.js"
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
   "dependencies": {
-    "axios": "^1.10.0",
-    "dotenv": "^16.5.0",
-    "twitter-api-v2": "^1.23.2"
+    "dayjs": "^1.11.10",
+    "dotenv": "^16.3.1",
+    "node-fetch": "^2.6.7",
+    "twitter-api-v2": "^1.19.5"
   }
 }
+
