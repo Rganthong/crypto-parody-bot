@@ -38,12 +38,16 @@ const getLatestTweet = async (username) => {
   return tweets.data?.data?.[0];
 };
 
+const hybridPrompt = (text) => {
+  return `Rewrite this crypto tweet as a hybrid of toxic realism and absurd hallucination. Be sarcastic like a bitter CT veteran, but also throw in wild degen-level delusion. Keep it short, chaotic, and clever:\n\n"${text}"`;
+};
+
 const generateParody = async (text) => {
   try {
     const res = await axios.post(
       "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
       {
-        inputs: `Rewrite this crypto tweet as a short, toxic, absurd parody like you're a deranged CT degen on 2 hours of sleep and 10x leverage. Be sarcastic, funny, and a little unhinged:\n\n"${text}"`,
+        inputs: hybridPrompt(text),
         parameters: {
           max_new_tokens: 80,
           return_full_text: false,
@@ -104,6 +108,8 @@ const start = async () => {
     await new Promise((r) => setTimeout(r, DELAY_PER_ACCOUNT));
   }
 };
+
+start();
 
 start();
 
