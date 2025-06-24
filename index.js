@@ -1,175 +1,136 @@
-// crypto-parody-bot/index.js
-require("dotenv").config();
-const axios = require("axios");
-const { TwitterApi } = require("twitter-api-v2");
-const fs = require("fs");
+const { TwitterApi } = require('twitter-api-v2');
+const axios = require('axios');
+const fs = require('fs');
+const path = require('path');
 
-const INTERVAL_MINUTES = 15;
-const DELAY_PER_ACCOUNT = INTERVAL_MINUTES * 60 * 1000;
-const targetAccounts = [
-  "whale_alert",
-  "BitcoinMagazine",
-  "lookonchain",
-  "CoinDesk"
-];
-
-// Multiple OpenAI API keys (comma-separated in .env)
-const OPENAI_KEYS = process.env.OPENAI_API_KEYS.split(",").map((key) => key.trim());
-let currentKeyIndex = 0;
-
-const twitterClient = new TwitterApi({
+// === Load env ===
+require('dotenv').config();
+const client = new TwitterApi({
   appKey: process.env.TWITTER_API_KEY,
   appSecret: process.env.TWITTER_API_SECRET,
   accessToken: process.env.TWITTER_ACCESS_TOKEN,
   accessSecret: process.env.TWITTER_ACCESS_SECRET,
 });
+const rwClient = client.readWrite;
 
-const rwClient = twitterClient.readWrite;
+// === Settings ===
+const TARGET_ACCOUNTS = [
+  'whale_alert',
+  'BitcoinMagazine',
+  'lookonchain',
+  'CoinDesk'
+];
 
-const log = (msg) => {
-  const timestamp = new Date().toISOString();
-  const out = `[${timestamp}] ${msg}`;
-  console.log(out);
-  fs.appendFileSync("log.txt", out + "\n");
-};
+const INTERVAL_MINUTES = 15;
+const MAX_RETRIES = 5;
+const RETRY_DELAY_MS = 30000;
+const OPENAI_KEYS = process.env.OPENAI_API_KEYS.split(',').map(k => k.trim());
+let currentKeyIndex = 0;
 
-const getLatestTweet = async (username) => {
-  const user = await rwClient.v2.userByUsername(username);
-  const tweets = await rwClient.v2.userTimeline(user.data.id, {
-    exclude: "replies",
-    max_results: 5,
-  });
-  return tweets.data?.data?.[0];
-};
+// === Helpers ===
+const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-const hybridPrompt = (text) => {
-  return `Rewrite this crypto tweet as a hybrid of toxic realism and absurd hallucination. Be sarcastic like a bitter CT veteran, but also throw in wild degen-level delusion. Keep it short, chaotic, and clever:\n\n"${text}"`;
-};
+async function getLatestTweet(username) {
+  const user = await client.v2.userByUsername(username);
+  const tweets = await client.v2.userTimeline(user.data.id, { exclude: 'replies', max_results: 5 });
+  return tweets.data.data?.[0];
+}
 
-const generateParody = async (text, retries = 5, delay = 30000) => {
-  for (let i = 0; i < retries; i++) {
+async function generateParody(text) {
+  let attempt = 0;
+  while (attempt < MAX_RETRIES) {
+    const key = OPENAI_KEYS[currentKeyIndex];
     try {
       const res = await axios.post(
-        "https://api.openai.com/v1/chat/completions",
+        'https://api.openai.com/v1/chat/completions',
         {
-          model: "gpt-3.5-turbo",
+          model: 'gpt-3.5-turbo',
           messages: [
             {
-              role: "system",
-              content: "You are a sarcastic and imaginative crypto Twitter shitposter."
+              role: 'system',
+              content: 'You are a crypto shitposter. Rewrite tweets into wild, toxic, and absurd parody form, using CT (crypto Twitter) slang. Keep it short. Add sarcasm.'
             },
             {
-              role: "user",
-              content: hybridPrompt(text)
+              role: 'user',
+              content: `Parody this tweet: ${text}`
             }
           ],
-          temperature: 1.1,
-          max_tokens: 100,
+          max_tokens: 140
         },
         {
           headers: {
-            Authorization: `Bearer ${OPENAI_KEYS[currentKeyIndex]}`,
-            "Content-Type": "application/json",
-          },
-          timeout: 20000,
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json'
+          }
         }
       );
       const parody = res.data.choices[0].message.content.trim();
-      if (parody.length > 220) return null;
       return parody;
-    } catch (e) {
-      if (e.response?.status === 429) {
-        log(`[AI] ⚠️ Key ${currentKeyIndex + 1} hit rate limit. Switching key & retrying in ${delay / 1000}s...`);
+    } catch (err) {
+      if (err.response?.status === 429) {
+        console.log(`[AI] Error 429: Rate limit hit on key ${currentKeyIndex + 1}. Retrying in 30s...`);
         currentKeyIndex = (currentKeyIndex + 1) % OPENAI_KEYS.length;
-        await new Promise((r) => setTimeout(r, delay));
+        attempt++;
+        await delay(RETRY_DELAY_MS);
       } else {
-        log(`[AI] ❌ Error: ${e.message}`);
+        console.error('[AI] Failed to generate parody:', err.message);
         return null;
       }
     }
   }
-  log(`[AI] ❌ All API keys failed after ${retries} retries.`);
   return null;
-};
+}
 
-const getTrendingHashtags = async () => {
+async function getTrendingHashtags() {
   try {
-    const { data } = await twitterClient.v1.get("trends/place.json", {
-      id: 1
-    });
-
-    const hashtags = data[0].trends
-      .map((trend) => trend.name)
-      .filter((name) => name.startsWith("#"))
-      .filter((tag) => /crypto|btc|eth|web3|sol|doge|bitcoin|ethereum/i.test(tag))
-      .slice(0, 3);
-
-    return hashtags;
-  } catch (e) {
-    log(`⚠️ Failed to fetch trending hashtags: ${e.message}`);
-    return [];
+    const res = await axios.get('https://api.tweepsmap.com/v3/twitter/trends?location=global');
+    const tags = res.data.trends.slice(0, 3).map(t => t.name).filter(t => t.startsWith('#'));
+    return tags.join(' ');
+  } catch {
+    return '#crypto #degen';
   }
-};
+}
 
-const quoteTweet = async (tweet, parody, username) => {
-  try {
-    const url = `https://twitter.com/${username}/status/${tweet.id}`;
-    const hashtags = await getTrendingHashtags();
-    const hashtagLine = hashtags.join(" ");
+async function runBot() {
+  console.log(`[${new Date().toISOString()}] 🚀 Bot started...`);
 
-    const fullText = `${parody}\n\n${url}\n\n${hashtagLine}`;
-    if (fullText.length > 280) {
-      log(`[${username}] ⚠️ Skipped tweet: exceeds 280 characters.`);
-      return;
+  for (const username of TARGET_ACCOUNTS) {
+    console.log(`[${new Date().toISOString()}] [${username}] Checking for latest tweet...`);
+
+    try {
+      const tweet = await getLatestTweet(username);
+      if (!tweet || !tweet.text || tweet.text.length < 10) {
+        console.log(`[${username}] ❌ No valid tweet found.`);
+        continue;
+      }
+
+      const parody = await generateParody(tweet.text);
+      if (!parody) {
+        console.log(`[${username}] ⚠️ Parody generation failed.`);
+        continue;
+      }
+
+      const hashtags = await getTrendingHashtags();
+      const fullTweet = `${parody}\n\n${hashtags}\n\nhttps://twitter.com/${username}/status/${tweet.id}`;
+
+      // Ensure tweet under 280 chars
+      const finalTweet = fullTweet.length > 280 ? fullTweet.slice(0, 277) + '...' : fullTweet;
+
+      await rwClient.v2.tweet(finalTweet);
+      console.log(`[${username}] ✅ Tweet posted:\n${finalTweet}`);
+    } catch (err) {
+      console.error(`[${username}] ❌ Error:`, err.message);
     }
 
-    await rwClient.v2.tweet(fullText);
-    log(`[${username}] ✅ Parody with hashtags posted.`);
-  } catch (e) {
-    log(`[${username}] ❌ Failed to post tweet: ${e.message}`);
+    console.log(`[${username}] ⏳ Waiting ${INTERVAL_MINUTES} minutes...\n`);
+    await delay(INTERVAL_MINUTES * 60 * 1000);
   }
-};
 
-const runBot = async (username) => {
-  try {
-    log(`[${username}] Checking for latest tweet...`);
-    const tweet = await getLatestTweet(username);
-    if (!tweet) {
-      log(`[${username}] ⚠️ No tweet found.`);
-      return false;
-    }
+  // Restart loop
+  console.log(`♻️ Cycle complete. Restarting...\n`);
+  runBot();
+}
 
-    const parody = await generateParody(tweet.text);
-    if (!parody) {
-      log(`[${username}] ⚠️ Parody generation failed.`);
-      return false;
-    }
+runBot();
 
-    await quoteTweet(tweet, parody, username);
-    return true;
-  } catch (e) {
-    if (e.code === 429 || e.response?.status === 429) {
-      log(`[${username}] ⚠️ Rate limit hit. Skipping.`);
-    } else {
-      log(`[${username}] ❌ Error: ${e.message}`);
-    }
-    return false;
-  }
-};
-
-const start = async () => {
-  log(`🚀 Bot started: 1 full cycle every 60 minutes (1 account / ${INTERVAL_MINUTES}m)...`);
-  for (let i = 0; ; i = (i + 1) % targetAccounts.length) {
-    const username = targetAccounts[i];
-    const result = await runBot(username);
-    if (!result) {
-      log(`[${username}] ⏭️ Skipping wait — moving to next account.`);
-      continue;
-    }
-    log(`⏳ Waiting ${INTERVAL_MINUTES} minutes before next account...`);
-    await new Promise((r) => setTimeout(r, DELAY_PER_ACCOUNT));
-  }
-};
-
-start();
 
