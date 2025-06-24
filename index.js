@@ -1,11 +1,12 @@
+// crypto-parody-bot/index.js
 const fs = require("fs");
 const axios = require("axios");
+const cheerio = require("cheerio");
 const dayjs = require("dayjs");
 require("dotenv").config();
 const { TwitterApi } = require("twitter-api-v2");
 
 const HF_API_KEY = process.env.HF_API_KEY;
-const BEARER_TOKEN = process.env.TWITTER_BEARER;
 const TWITTER_TARGETS = process.env.TWITTER_TARGETS.split(",");
 const client = new TwitterApi({
   appKey: process.env.TWITTER_API_KEY,
@@ -17,15 +18,15 @@ const client = new TwitterApi({
 const USED_TWEETS_FILE = "used_tweets.txt";
 const DELAY_BETWEEN_ACCOUNTS = 15 * 60 * 1000;
 
-function delay(ms) {
-  return new Promise((res) => setTimeout(res, ms));
-}
-
 function log(msg) {
   const timestamp = `[${dayjs().toISOString()}]`;
-  const line = `${timestamp} ${msg}`;
-  console.log(line);
-  fs.appendFileSync("log.txt", line + "\n");
+  const logLine = `${timestamp} ${msg}`;
+  console.log(logLine);
+  fs.appendFileSync("log.txt", logLine + "\n");
+}
+
+function delay(ms) {
+  return new Promise((res) => setTimeout(res, ms));
 }
 
 function loadUsedTweets() {
@@ -37,49 +38,35 @@ function saveUsedTweet(id) {
   fs.appendFileSync(USED_TWEETS_FILE, id + "\n");
 }
 
-async function getLatestTweet(username, attempt = 1) {
+async function scrapeLatestTweet(username) {
   try {
-    const res = await axios.get(`https://api.twitter.com/2/users/by/username/${username}`, {
-      headers: { Authorization: `Bearer ${BEARER_TOKEN}` },
-    });
-    const userId = res.data.data.id;
-
-    const tweets = await axios.get(`https://api.twitter.com/2/users/${userId}/tweets`, {
-      headers: { Authorization: `Bearer ${BEARER_TOKEN}` },
-      params: {
-        max_results: 5,
-        "tweet.fields": "created_at",
-        exclude: "replies,retweets",
-      },
-    });
-
-    return tweets.data.data?.[0];
+    const res = await axios.get(`https://x.com/${username}`);
+    const $ = cheerio.load(res.data);
+    const scripts = $("script").toArray();
+    const raw = scripts.find((s) => $(s).html().includes("__REACT_QUERY_INITIAL_QUERIES__"));
+    const jsonMatch = $(raw).html().match(/\{"props":.*\}\}\);/);
+    if (!jsonMatch) throw new Error("Tweet data not found");
+    const json = JSON.parse(jsonMatch[0]);
+    const tweets = json.props.pageProps.tweets;
+    const tweet = tweets.find((t) => t.user.username === username);
+    return tweet;
   } catch (err) {
-    const status = err.response?.status || "UNKNOWN";
-    log(`[${username}] ⚠️ Failed to fetch tweet: ${status}`);
+    log(`[${username}] ❌ Failed to scrape tweet: ${err.message}`);
     console.error(err);
-
-    if (status === 500 && attempt < 3) {
-      log(`[${username}] 🔁 Retrying fetch in 30s... (Attempt ${attempt + 1})`);
-      await delay(30000);
-      return await getLatestTweet(username, attempt + 1);
-    }
-
     return null;
   }
 }
 
 async function generateParodyTweet(originalText) {
-  const prompt = `Rewrite this crypto tweet as a delusional, toxic parody for CT. Be halu, sarcastic, absurd:\n"${originalText}"`;
-
-  let retries = 5;
+  const prompt = `Rewrite this crypto tweet as a toxic, delusional CT parody with halu and absurd energy. Make it sarcastic and hilarious:\n\"${originalText}\"`;
+  let retries = 3;
   while (retries--) {
     try {
-      const res = await axios.post(
+      const response = await axios.post(
         "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
         {
           inputs: prompt,
-          parameters: { max_new_tokens: 120, temperature: 1.2 },
+          parameters: { max_new_tokens: 120, temperature: 1.3 },
         },
         {
           headers: {
@@ -88,55 +75,47 @@ async function generateParodyTweet(originalText) {
           },
         }
       );
-
-      const raw = res.data[0]?.generated_text || "";
-      const tweet = raw.replace(prompt, "").trim().replace(/\s+/g, " ");
-
-      if (tweet.length <= 280 && tweet.length >= 10) return tweet;
-      log(`[AI] ✂️ Output too long or empty, regenerating...`);
+      const output = response.data[0]?.generated_text;
+      const tweet = output.replace(prompt, "").trim().replace(/\s+/g, " ");
+      if (tweet.length <= 280 && tweet.length > 10) return tweet;
     } catch (err) {
-      const code = err.response?.status || "UNKNOWN";
-      if (code === 429) {
-        log(`[AI] 🔁 Rate limited. Waiting 30s...`);
+      if (err.response?.status === 429) {
+        log(`[AI] Rate limit hit. Waiting 30s...`);
         await delay(30000);
       } else {
-        log(`[AI] ❌ Generation failed: ${code}`);
+        log(`[AI] Generation failed: ${err.message}`);
         console.error(err);
         return null;
       }
     }
   }
-
   return null;
 }
 
 async function runForAccount(username) {
   log(`[${username}] Checking for latest tweet...`);
-  const latest = await getLatestTweet(username);
-  if (!latest) return;
+  const tweet = await scrapeLatestTweet(username);
+  if (!tweet || !tweet.id_str || !tweet.full_text) return;
 
-  const used = loadUsedTweets();
-  if (used.has(latest.id)) {
+  const usedTweets = loadUsedTweets();
+  if (usedTweets.has(tweet.id_str)) {
     log(`[${username}] No new tweet.`);
     return;
   }
 
-  const parody = await generateParodyTweet(latest.text);
+  const parody = await generateParodyTweet(tweet.full_text);
   if (!parody) {
     log(`[${username}] ⚠️ Parody generation failed.`);
     return;
   }
 
   try {
-    const tweetUrl = `https://twitter.com/${username}/status/${latest.id}`;
-    const result = await client.v2.tweet({
-      text: `${parody}\n\n${tweetUrl}`,
-    });
-
-    log(`[${username}] ✅ Quote posted: ${result.data.id}`);
-    saveUsedTweet(latest.id);
+    const tweetUrl = `https://x.com/${username}/status/${tweet.id_str}`;
+    const result = await client.v2.tweet({ text: `${parody}\n\n${tweetUrl}` });
+    log(`[${username}] ✅ Parody posted: ${result.data.id}`);
+    saveUsedTweet(tweet.id_str);
   } catch (err) {
-    log(`[${username}] ❌ Post failed: ${err.message}`);
+    log(`[${username}] ❌ Failed to post: ${err.message}`);
     console.error(err);
   }
 }
