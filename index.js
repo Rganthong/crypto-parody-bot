@@ -1,9 +1,10 @@
+// crypto-parody-bot/index.js
 require("dotenv").config();
 const axios = require("axios");
 const { TwitterApi } = require("twitter-api-v2");
 const fs = require("fs");
 
-const INTERVAL_MINUTES = 15;
+const INTERVAL_MINUTES = 60 / 4; // 4 akun per jam (1 akun tiap 15 menit)
 const DELAY_PER_ACCOUNT = INTERVAL_MINUTES * 60 * 1000;
 const targetAccounts = [
   "BitcoinMagazine",
@@ -107,7 +108,7 @@ const runBot = async (username) => {
 };
 
 const start = async () => {
-  log(`🚀 Bot started: 1 account every ${INTERVAL_MINUTES} minutes...`);
+  log(`🚀 Bot started: 1 full cycle every 60 minutes (1 account / ${INTERVAL_MINUTES}m)...`);
   for (let i = 0; ; i = (i + 1) % targetAccounts.length) {
     const username = targetAccounts[i];
     await runBot(username);
