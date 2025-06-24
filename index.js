@@ -8,10 +8,10 @@ const LOG_FILE = path.join(__dirname, "log.txt");
 const INTERVAL_MINUTES = 15;
 
 const targetAccounts = [
-  "BitcoinMagazine",
+  "whale_alert",
   "CoinDesk",
   "lookonchain",
-  "whale_alert"
+  "BitcoinMagazine"
 ];
 
 const client = new TwitterApi({
@@ -64,7 +64,7 @@ const processNextAccount = async () => {
     log(`[${username}] Checking for latest tweet...`);
     const user = await client.v2.userByUsername(username);
     const tweets = await client.v2.userTimeline(user.data.id, {
-      max_results: 5,
+      max_results: 1, // ✅ Ambil 1 tweet saja
       exclude: "replies",
       "tweet.fields": "created_at"
     });
