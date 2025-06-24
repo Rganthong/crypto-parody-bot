@@ -1,19 +1,26 @@
 {
   "name": "crypto-parody-bot",
   "version": "1.0.0",
-  "description": "A Twitter bot that generates crypto parody tweets using Hugging Face models.",
+  "description": "Twitter bot parody dengan AI dan real-time hashtag",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
-  "author": "",
-  "license": "ISC",
   "dependencies": {
     "axios": "^1.10.0",
+    "cheerio": "^1.0.0-rc.12",
     "dayjs": "^1.11.10",
     "dotenv": "^16.5.0",
-    "node-fetch": "^2.6.7",
     "twitter-api-v2": "^1.23.2"
-  }
+  },
+  "keywords": [
+    "twitter",
+    "bot",
+    "crypto",
+    "parody",
+    "huggingface",
+    "railway"
+  ],
+  "author": "",
+  "license": ""
 }
-
