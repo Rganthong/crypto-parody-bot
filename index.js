@@ -1,11 +1,11 @@
-require("dotenv").config();
-const { TwitterApi } = require("twitter-api-v2");
-const axios = require("axios");
-const fs = require("fs");
-const path = require("path");
+const { TwitterApi } = require('twitter-api-v2');
+const axios = require('axios');
+const fs = require('fs');
+require('dotenv').config();
 
-const LOG_FILE = path.join(__dirname, "log.txt");
+const logFile = 'log.txt';
 const INTERVAL_MINUTES = 15;
+const DELAY_BETWEEN_ACCOUNTS_MS = INTERVAL_MINUTES * 60 * 1000;
 
 const targetAccounts = [
   "whale_alert",
@@ -18,80 +18,76 @@ const client = new TwitterApi({
   appKey: process.env.TWITTER_API_KEY,
   appSecret: process.env.TWITTER_API_SECRET,
   accessToken: process.env.TWITTER_ACCESS_TOKEN,
-  accessSecret: process.env.TWITTER_ACCESS_SECRET
+  accessSecret: process.env.TWITTER_ACCESS_SECRET,
 });
 
-const rwClient = client.readWrite;
-
-const log = (msg) => {
+function log(message) {
   const timestamp = new Date().toISOString();
-  const full = `[${timestamp}] ${msg}`;
-  console.log(full);
-  fs.appendFileSync(LOG_FILE, full + "\n");
-};
+  const line = `[${timestamp}] ${message}`;
+  console.log(line);
+  fs.appendFileSync(logFile, line + '\n');
+}
 
-const generateParody = async (text) => {
+async function generateParody(text) {
   try {
-    const res = await axios.post(
-      "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
+    const response = await axios.post(
+      'https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta',
       {
-        inputs: `Rewrite this crypto tweet as a short, toxic or absurd parody:\n"${text}"`
+        inputs: `Rewrite this crypto tweet as a short, wild, absurd parody with sarcasm: ${text}`,
+        parameters: {
+          max_new_tokens: 60,
+          return_full_text: false
+        }
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.HUGGINGFACE_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        timeout: 20000
+          Authorization: `Bearer ${process.env.HF_TOKEN}`,
+          'Content-Type': 'application/json'
+        }
       }
     );
-    const out = res.data?.[0]?.generated_text;
-    return out?.replace(/\n/g, " ").slice(0, 240);
-  } catch (e) {
-    log(`[AI] Error: ${e.message}`);
+    const result = response.data[0]?.generated_text?.trim();
+    return result || null;
+  } catch (err) {
     return null;
   }
-};
+}
 
-let index = 0;
-const posted = new Set();
-
-const processNextAccount = async () => {
-  const username = targetAccounts[index % targetAccounts.length];
-  index++;
+async function processAccount(username) {
+  log(`[${username}] Checking for latest tweet...`);
 
   try {
-    log(`[${username}] Checking for latest tweet...`);
     const user = await client.v2.userByUsername(username);
+    if (!user?.data?.id) {
+      log(`[${username}] ❌ Failed to get user ID.`);
+      return;
+    }
+
     const tweets = await client.v2.userTimeline(user.data.id, {
-      max_results: 1, // ✅ Ambil 1 tweet saja
-      exclude: "replies",
+      max_results: 1,
+      exclude: "retweets,replies",
       "tweet.fields": "created_at"
     });
 
     const latest = tweets.data?.data?.[0];
     if (!latest) {
-      log(`[${username}] No tweets found.`);
+      log(`[${username}] No recent tweet found.`);
       return;
     }
 
-    if (posted.has(latest.id)) {
-      log(`[${username}] Already posted this one.`);
-      return;
-    }
-
-    const parody = await generateParody(latest.text);
-    if (!parody) {
-      log(`[${username}] Parody generation failed.`);
-      return;
-    }
-
+    const tweetText = latest.text;
     const tweetUrl = `https://twitter.com/${username}/status/${latest.id}`;
-    const post = `${parody}\n\n${tweetUrl}`;
-    await rwClient.v2.tweet(post);
 
-    posted.add(latest.id);
+    const parody = await generateParody(tweetText);
+    if (!parody) {
+      log(`[${username}] ⚠️ Parody generation failed, skipping.`);
+      return;
+    }
+
+    const post = `${parody}\n\n${tweetUrl}`;
+    await client.v2.tweet(post);
     log(`[${username}] ✅ Parody posted.`);
+
   } catch (err) {
     if (err.code === 429) {
       log(`[${username}] ⚠️ Rate limit hit. Skipping.`);
@@ -99,8 +95,19 @@ const processNextAccount = async () => {
       log(`[${username}] ❌ Error: ${err.message}`);
     }
   }
-};
+}
 
-log("🚀 Bot started: checking 1 account every 15 minutes...");
-processNextAccount();
-setInterval(processNextAccount, INTERVAL_MINUTES * 60 * 1000);
+async function runCycle() {
+  log(`🚀 Bot started: 1 account every ${INTERVAL_MINUTES} minutes...`);
+
+  for (const username of targetAccounts) {
+    await processAccount(username);
+    log(`⏳ Waiting ${INTERVAL_MINUTES} minutes before next account...`);
+    await new Promise((res) => setTimeout(res, DELAY_BETWEEN_ACCOUNTS_MS));
+  }
+
+  log(`🔁 Full cycle complete. Restarting in ${INTERVAL_MINUTES} minutes...`);
+  setTimeout(runCycle, DELAY_BETWEEN_ACCOUNTS_MS);
+}
+
+runCycle();
