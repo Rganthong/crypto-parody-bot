@@ -17,15 +17,15 @@ const client = new TwitterApi({
 const USED_TWEETS_FILE = "used_tweets.txt";
 const DELAY_BETWEEN_ACCOUNTS = 15 * 60 * 1000;
 
-async function delay(ms) {
+function delay(ms) {
   return new Promise((res) => setTimeout(res, ms));
 }
 
 function log(msg) {
   const timestamp = `[${dayjs().toISOString()}]`;
-  const logLine = `${timestamp} ${msg}`;
-  console.log(logLine);
-  fs.appendFileSync("log.txt", logLine + "\n");
+  const line = `${timestamp} ${msg}`;
+  console.log(line);
+  fs.appendFileSync("log.txt", line + "\n");
 }
 
 function loadUsedTweets() {
@@ -37,7 +37,7 @@ function saveUsedTweet(id) {
   fs.appendFileSync(USED_TWEETS_FILE, id + "\n");
 }
 
-async function getLatestTweet(username) {
+async function getLatestTweet(username, attempt = 1) {
   try {
     const res = await axios.get(`https://api.twitter.com/2/users/by/username/${username}`, {
       headers: { Authorization: `Bearer ${BEARER_TOKEN}` },
@@ -55,25 +55,31 @@ async function getLatestTweet(username) {
 
     return tweets.data.data?.[0];
   } catch (err) {
-    log(`[${username}] ⚠️ Failed to fetch tweet: ${err.response?.status || err.message}`);
+    const status = err.response?.status || "UNKNOWN";
+    log(`[${username}] ⚠️ Failed to fetch tweet: ${status}`);
     console.error(err);
+
+    if (status === 500 && attempt < 3) {
+      log(`[${username}] 🔁 Retrying fetch in 30s... (Attempt ${attempt + 1})`);
+      await delay(30000);
+      return await getLatestTweet(username, attempt + 1);
+    }
+
     return null;
   }
 }
 
 async function generateParodyTweet(originalText) {
-  const prompt = `Rewrite this crypto tweet as a toxic, delusional CT parody with halu and absurd energy. Make it sarcastic and hilarious:\n"${originalText}"`;
-  let retries = 3;
+  const prompt = `Rewrite this crypto tweet as a delusional, toxic parody for CT. Be halu, sarcastic, absurd:\n"${originalText}"`;
+
+  let retries = 5;
   while (retries--) {
     try {
-      const response = await axios.post(
+      const res = await axios.post(
         "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
         {
           inputs: prompt,
-          parameters: {
-            max_new_tokens: 120,
-            temperature: 1.2,
-          },
+          parameters: { max_new_tokens: 120, temperature: 1.2 },
         },
         {
           headers: {
@@ -83,73 +89,55 @@ async function generateParodyTweet(originalText) {
         }
       );
 
-      const output = response.data[0]?.generated_text;
-      const tweet = output
-        .replace(prompt, "")
-        .trim()
-        .replace(/\s+/g, " ")
-        .slice(0, 280);
+      const raw = res.data[0]?.generated_text || "";
+      const tweet = raw.replace(prompt, "").trim().replace(/\s+/g, " ");
 
-      if (tweet.length <= 280 && tweet.length > 10) return tweet;
+      if (tweet.length <= 280 && tweet.length >= 10) return tweet;
+      log(`[AI] ✂️ Output too long or empty, regenerating...`);
     } catch (err) {
-      if (err.response?.status === 429) {
-        log(`[AI] Rate limit hit. Waiting 30s...`);
+      const code = err.response?.status || "UNKNOWN";
+      if (code === 429) {
+        log(`[AI] 🔁 Rate limited. Waiting 30s...`);
         await delay(30000);
       } else {
-        log(`[AI] Generation failed: ${err.message}`);
+        log(`[AI] ❌ Generation failed: ${code}`);
         console.error(err);
         return null;
       }
     }
   }
-  return null;
-}
 
-async function postWithRetry(text, tweetUrl, maxRetries = 3) {
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    try {
-      const result = await client.v2.tweet({
-        text: `${text}\n\n${tweetUrl}`,
-      });
-      return result;
-    } catch (err) {
-      log(`⚠️ Post attempt ${attempt} failed: ${err.message}`);
-      console.error(err);
-      if (attempt < maxRetries) {
-        log(`🔁 Retrying in 10s...`);
-        await delay(10000);
-      } else {
-        log(`❌ All retry attempts failed.`);
-        return null;
-      }
-    }
-  }
+  return null;
 }
 
 async function runForAccount(username) {
   log(`[${username}] Checking for latest tweet...`);
-  const latestTweet = await getLatestTweet(username);
-  if (!latestTweet) return;
+  const latest = await getLatestTweet(username);
+  if (!latest) return;
 
-  const usedTweets = loadUsedTweets();
-  if (usedTweets.has(latestTweet.id)) {
+  const used = loadUsedTweets();
+  if (used.has(latest.id)) {
     log(`[${username}] No new tweet.`);
     return;
   }
 
-  const parody = await generateParodyTweet(latestTweet.text);
+  const parody = await generateParodyTweet(latest.text);
   if (!parody) {
     log(`[${username}] ⚠️ Parody generation failed.`);
     return;
   }
 
-  const tweetUrl = `https://twitter.com/${username}/status/${latestTweet.id}`;
-  const result = await postWithRetry(parody, tweetUrl);
-  if (result) {
-    log(`[${username}] ✅ Parody posted: ${result.data.id}`);
-    saveUsedTweet(latestTweet.id);
-  } else {
-    log(`[${username}] ❌ Failed to post after retries.`);
+  try {
+    const tweetUrl = `https://twitter.com/${username}/status/${latest.id}`;
+    const result = await client.v2.tweet({
+      text: `${parody}\n\n${tweetUrl}`,
+    });
+
+    log(`[${username}] ✅ Quote posted: ${result.data.id}`);
+    saveUsedTweet(latest.id);
+  } catch (err) {
+    log(`[${username}] ❌ Post failed: ${err.message}`);
+    console.error(err);
   }
 }
 
@@ -164,7 +152,3 @@ async function main() {
 }
 
 main();
-
-
-main();
-
