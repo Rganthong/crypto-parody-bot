@@ -1,133 +1,110 @@
-const { TwitterApi } = require('twitter-api-v2');
-const axios = require('axios');
-const fs = require('fs');
-require('dotenv').config();
+// crypto-parody-bot/index.js
+require("dotenv").config();
+const axios = require("axios");
+const { TwitterApi } = require("twitter-api-v2");
+const fs = require("fs");
 
-const logFile = 'log.txt';
-const cacheFile = 'cache.json';
 const INTERVAL_MINUTES = 15;
-const DELAY_BETWEEN_ACCOUNTS_MS = INTERVAL_MINUTES * 60 * 1000;
-
+const DELAY_PER_ACCOUNT = INTERVAL_MINUTES * 60 * 1000;
 const targetAccounts = [
-  "whale_alert",
+  "BitcoinMagazine",
   "CoinDesk",
   "lookonchain",
-  "BitcoinMagazine"
+  "whale_alert"
 ];
 
-const client = new TwitterApi({
+const twitterClient = new TwitterApi({
   appKey: process.env.TWITTER_API_KEY,
   appSecret: process.env.TWITTER_API_SECRET,
   accessToken: process.env.TWITTER_ACCESS_TOKEN,
   accessSecret: process.env.TWITTER_ACCESS_SECRET,
 });
 
-let tweetCache = {};
-try {
-  tweetCache = JSON.parse(fs.readFileSync(cacheFile));
-} catch {
-  tweetCache = {};
-}
+const rwClient = twitterClient.readWrite;
 
-function log(message) {
+const log = (msg) => {
   const timestamp = new Date().toISOString();
-  const line = `[${timestamp}] ${message}`;
-  console.log(line);
-  fs.appendFileSync(logFile, line + '\n');
-}
+  const out = `[${timestamp}] ${msg}`;
+  console.log(out);
+  fs.appendFileSync("log.txt", out + "\n");
+};
 
-async function generateParody(text) {
+const getLatestTweet = async (username) => {
+  const user = await rwClient.v2.userByUsername(username);
+  const tweets = await rwClient.v2.userTimeline(user.data.id, {
+    exclude: "replies",
+    max_results: 5,
+  });
+  return tweets.data?.data?.[0];
+};
+
+const generateParody = async (text) => {
   try {
-    const response = await axios.post(
-      'https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta',
+    const res = await axios.post(
+      "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
       {
-        inputs: `Rewrite this crypto tweet as a short, absurd, toxic maximalist shitpost in broken English. Under 200 characters:\n\n"${text}"`,
+        inputs: `Rewrite this crypto tweet as a short, toxic, absurd parody like you're a deranged CT degen on 2 hours of sleep and 10x leverage. Be sarcastic, funny, and a little unhinged:\n\n"${text}"`,
         parameters: {
-          max_new_tokens: 60,
-          return_full_text: false
-        }
+          max_new_tokens: 80,
+          return_full_text: false,
+        },
       },
       {
         headers: {
-          Authorization: `Bearer ${process.env.HF_TOKEN}`,
-          'Content-Type': 'application/json'
-        }
+          Authorization: `Bearer ${process.env.HUGGINGFACE_TOKEN}`,
+          "Content-Type": "application/json",
+        },
+        timeout: 20000,
       }
     );
-    const result = response.data[0]?.generated_text?.trim();
-    return result || null;
-  } catch {
+    const out = res.data?.[0]?.generated_text;
+    return out?.replace(/\n/g, " ").slice(0, 240);
+  } catch (e) {
+    log(`[AI] Error: ${e.message}`);
     return null;
   }
-}
+};
 
-async function processAccount(username) {
-  log(`[${username}] Checking for latest tweet...`);
-
+const quoteTweet = async (tweet, parody, username) => {
   try {
-    const user = await client.v2.userByUsername(username);
-    if (!user?.data?.id) {
-      log(`[${username}] ❌ Failed to get user ID.`);
-      return;
-    }
+    const url = `https://twitter.com/${username}/status/${tweet.id}`;
+    const content = `${parody}\n\n${url}`;
+    await rwClient.v2.tweet(content);
+    log(`[${username}] ✅ Parody posted.`);
+  } catch (e) {
+    log(`[${username}] ❌ Failed to post tweet: ${e.message}`);
+  }
+};
 
-    const tweets = await client.v2.userTimeline(user.data.id, {
-      max_results: 5,
-      "tweet.fields": "created_at,in_reply_to_user_id"
-    });
+const runBot = async (username) => {
+  try {
+    log(`[${username}] Checking for latest tweet...`);
+    const tweet = await getLatestTweet(username);
+    if (!tweet) return log(`[${username}] ⚠️ No tweet found.`);
 
-    const latest = tweets.data?.data?.find(
-      (t) => !t.text.startsWith('RT') && !t.in_reply_to_user_id
-    );
+    const parody = await generateParody(tweet.text);
+    if (!parody) return log(`[${username}] ⚠️ Parody generation failed.`);
 
-    if (!latest) {
-      log(`[${username}] No original tweet found.`);
-      return;
-    }
-
-    if (tweetCache[username] === latest.id) {
-      log(`[${username}] ✅ Sudah diproses sebelumnya. Skip.`);
-      return;
-    }
-
-    const tweetText = latest.text;
-    const parody = await generateParody(tweetText);
-
-    if (!parody) {
-      log(`[${username}] ⚠️ Parody generation failed, skipping.`);
-      return;
-    }
-
-    // ✅ Quote tweet asli
-    await client.v2.tweet(parody, {
-      quote_tweet_id: latest.id
-    });
-
-    log(`[${username}] ✅ Quote parody posted.`);
-    tweetCache[username] = latest.id;
-    fs.writeFileSync(cacheFile, JSON.stringify(tweetCache, null, 2));
-
-  } catch (err) {
-    if (err.code === 429) {
+    await quoteTweet(tweet, parody, username);
+  } catch (e) {
+    if (e.code === 429) {
       log(`[${username}] ⚠️ Rate limit hit. Skipping.`);
     } else {
-      log(`[${username}] ❌ Error: ${err.message}`);
+      log(`[${username}] ❌ Error: ${e.message}`);
     }
   }
-}
+};
 
-async function runCycle() {
+const start = async () => {
   log(`🚀 Bot started: 1 account every ${INTERVAL_MINUTES} minutes...`);
-
-  for (const username of targetAccounts) {
-    await processAccount(username);
+  for (let i = 0; ; i = (i + 1) % targetAccounts.length) {
+    const username = targetAccounts[i];
+    await runBot(username);
     log(`⏳ Waiting ${INTERVAL_MINUTES} minutes before next account...`);
-    await new Promise((res) => setTimeout(res, DELAY_BETWEEN_ACCOUNTS_MS));
+    await new Promise((r) => setTimeout(r, DELAY_PER_ACCOUNT));
   }
+};
 
-  log(`🔁 Full cycle complete. Restarting in ${INTERVAL_MINUTES} minutes...`);
-  setTimeout(runCycle, DELAY_BETWEEN_ACCOUNTS_MS);
-}
+start();
 
-runCycle();
 
