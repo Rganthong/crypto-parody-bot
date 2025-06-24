@@ -1,9 +1,11 @@
+// index.js
 const { TwitterApi } = require('twitter-api-v2');
 const axios = require('axios');
 const fs = require('fs');
 require('dotenv').config();
 
 const logFile = 'log.txt';
+const cacheFile = 'cache.json';
 const INTERVAL_MINUTES = 15;
 const DELAY_BETWEEN_ACCOUNTS_MS = INTERVAL_MINUTES * 60 * 1000;
 
@@ -20,6 +22,13 @@ const client = new TwitterApi({
   accessToken: process.env.TWITTER_ACCESS_TOKEN,
   accessSecret: process.env.TWITTER_ACCESS_SECRET,
 });
+
+let tweetCache = {};
+try {
+  tweetCache = JSON.parse(fs.readFileSync(cacheFile));
+} catch {
+  tweetCache = {};
+}
 
 function log(message) {
   const timestamp = new Date().toISOString();
@@ -75,6 +84,11 @@ async function processAccount(username) {
       return;
     }
 
+    if (tweetCache[username] === latest.id) {
+      log(`[${username}] ✅ Sudah diproses sebelumnya. Skip.`);
+      return;
+    }
+
     const tweetText = latest.text;
     const tweetUrl = `https://twitter.com/${username}/status/${latest.id}`;
 
@@ -87,6 +101,9 @@ async function processAccount(username) {
     const post = `${parody}\n\n${tweetUrl}`;
     await client.v2.tweet(post);
     log(`[${username}] ✅ Parody posted.`);
+
+    tweetCache[username] = latest.id;
+    fs.writeFileSync(cacheFile, JSON.stringify(tweetCache, null, 2));
 
   } catch (err) {
     if (err.code === 429) {
