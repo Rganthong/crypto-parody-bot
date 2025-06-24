@@ -1,116 +1,147 @@
+const fs = require("fs");
+const axios = require("axios");
+const dayjs = require("dayjs");
 require("dotenv").config();
 const { TwitterApi } = require("twitter-api-v2");
-const axios = require("axios");
-const fs = require("fs");
-const path = require("path");
 
-const LOG_FILE = path.join(__dirname, "log.txt");
-const DELAY_PER_ACCOUNT_MINUTES = 12;
-
-const targetAccounts = [
-  "BitcoinMagazine",
-  "CoinDesk",
-  "lookonchain",
-  "whale_alert"
-];
-
-// Twitter client
+const HF_API_KEY = process.env.HF_API_KEY;
+const BEARER_TOKEN = process.env.TWITTER_BEARER;
+const TWITTER_TARGETS = process.env.TWITTER_TARGETS.split(",");
 const client = new TwitterApi({
   appKey: process.env.TWITTER_API_KEY,
   appSecret: process.env.TWITTER_API_SECRET,
   accessToken: process.env.TWITTER_ACCESS_TOKEN,
-  accessSecret: process.env.TWITTER_ACCESS_SECRET
+  accessSecret: process.env.TWITTER_ACCESS_SECRET,
 });
 
-const rwClient = client.readWrite;
+const USED_TWEETS_FILE = "used_tweets.txt";
+const DELAY_BETWEEN_ACCOUNTS = 15 * 60 * 1000;
 
-// Parody style prompt
-const generateParody = async (originalText) => {
+async function delay(ms) {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+function log(msg) {
+  const timestamp = `[${dayjs().toISOString()}]`;
+  const logLine = `${timestamp} ${msg}`;
+  console.log(logLine);
+  fs.appendFileSync("log.txt", logLine + "\n");
+}
+
+function loadUsedTweets() {
+  if (!fs.existsSync(USED_TWEETS_FILE)) return new Set();
+  return new Set(fs.readFileSync(USED_TWEETS_FILE, "utf-8").split("\n"));
+}
+
+function saveUsedTweet(id) {
+  fs.appendFileSync(USED_TWEETS_FILE, id + "\n");
+}
+
+async function getLatestTweet(username) {
   try {
-    const res = await axios.post(
-      "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
-      {
-        inputs: `Rewrite this crypto tweet as a short, unfiltered parody with absurd humor or sarcasm:\n"${originalText}"`
+    const res = await axios.get(`https://api.twitter.com/2/users/by/username/${username}`, {
+      headers: { Authorization: `Bearer ${BEARER_TOKEN}` },
+    });
+    const userId = res.data.data.id;
+
+    const tweets = await axios.get(`https://api.twitter.com/2/users/${userId}/tweets`, {
+      headers: { Authorization: `Bearer ${BEARER_TOKEN}` },
+      params: {
+        max_results: 5,
+        "tweet.fields": "created_at",
+        exclude: "replies,retweets",
       },
-      {
-        headers: {
-          Authorization: `Bearer ${process.env.HUGGINGFACE_TOKEN}`,
-          "Content-Type": "application/json"
-        },
-        timeout: 20000
-      }
-    );
-    const result = res.data[0]?.generated_text;
-    return result?.replace(/\n/g, " ").slice(0, 250); // short parody max ~250 chars
-  } catch (err) {
-    log(`[AI] Error generating parody: ${err.message}`);
-    return null;
-  }
-};
-
-const delay = (ms) => new Promise((res) => setTimeout(res, ms));
-
-const log = (message) => {
-  const time = new Date().toISOString();
-  const entry = `[${time}] ${message}`;
-  console.log(entry);
-  fs.appendFileSync(LOG_FILE, entry + "\n");
-};
-
-const postedTweetIds = new Set();
-
-const processAccount = async (username) => {
-  try {
-    log(`[${username}] Checking latest tweet...`);
-    const user = await client.v2.userByUsername(username);
-    const tweets = await client.v2.userTimeline(user.data.id, {
-      max_results: 5,
-      exclude: "replies",
-      "tweet.fields": "created_at"
     });
 
-    const latest = tweets.data?.data?.[0];
-    if (!latest) {
-      log(`[${username}] No tweet found.`);
-      return;
-    }
-
-    if (postedTweetIds.has(latest.id)) {
-      log(`[${username}] Already posted this tweet.`);
-      return;
-    }
-
-    const parody = await generateParody(latest.text);
-    if (!parody) {
-      log(`[${username}] Failed to generate parody, skipped.`);
-      return;
-    }
-
-    const tweetUrl = `https://twitter.com/${username}/status/${latest.id}`;
-    const composed = `${parody}\n\n${tweetUrl}`;
-
-    await rwClient.v2.tweet(composed);
-    postedTweetIds.add(latest.id);
-    log(`[${username}] ✅ Posted parody quote tweet.`);
+    return tweets.data.data?.[0];
   } catch (err) {
-    if (err.code === 429) {
-      log(`[${username}]⚠️ Rate limit hit. Waiting 15 minutes...`);
-      await delay(15 * 60 * 1000);
-    } else {
-      log(`[${username}] ❌ Error: ${err.message}`);
+    log(`[${username}] ⚠️ Failed to fetch tweet: ${err.response?.status || err.message}`);
+    return null;
+  }
+}
+
+async function generateParodyTweet(originalText) {
+  const prompt = `Rewrite this crypto tweet as a toxic, delusional CT parody with halu and absurd energy. Make it sarcastic and hilarious:\n"${originalText}"`;
+  let retries = 3;
+  while (retries--) {
+    try {
+      const response = await axios.post(
+        "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
+        {
+          inputs: prompt,
+          parameters: {
+            max_new_tokens: 120,
+            temperature: 1.2,
+          },
+        },
+        {
+          headers: {
+            Authorization: `Bearer ${HF_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+        }
+      );
+
+      const output = response.data[0]?.generated_text;
+      const tweet = output
+        .replace(prompt, "")
+        .trim()
+        .replace(/\s+/g, " ")
+        .slice(0, 280);
+
+      if (tweet.length <= 280 && tweet.length > 10) return tweet;
+    } catch (err) {
+      if (err.response?.status === 429) {
+        log(`[AI] Rate limit hit. Waiting 30s...`);
+        await delay(30000);
+      } else {
+        log(`[AI] Generation failed: ${err.message}`);
+        return null;
+      }
     }
   }
-};
+  return null;
+}
 
-const runBot = async () => {
-  log(`🚀 Bot started: will run full cycle every ${DELAY_PER_ACCOUNT_MINUTES * targetAccounts.length} minutes (${DELAY_PER_ACCOUNT_MINUTES}m delay per account)...`);
-  for (const account of targetAccounts) {
-    await processAccount(account);
-    log(`⏳ Waiting ${DELAY_PER_ACCOUNT_MINUTES} minutes before next account...`);
-    await delay(DELAY_PER_ACCOUNT_MINUTES * 60 * 1000);
+async function runForAccount(username) {
+  log(`[${username}] Checking for latest tweet...`);
+  const latestTweet = await getLatestTweet(username);
+  if (!latestTweet) return;
+
+  const usedTweets = loadUsedTweets();
+  if (usedTweets.has(latestTweet.id)) {
+    log(`[${username}] No new tweet.`);
+    return;
   }
-  log("🔁 Finished full cycle. Restarting...");
-  runBot();
-};
 
-runBot();
+  const parody = await generateParodyTweet(latestTweet.text);
+  if (!parody) {
+    log(`[${username}] ⚠️ Parody generation failed.`);
+    return;
+  }
+
+  try {
+    const tweetUrl = `https://twitter.com/${username}/status/${latestTweet.id}`;
+    const result = await client.v2.tweet({
+      text: `${parody}\n\n${tweetUrl}`,
+    });
+
+    log(`[${username}] ✅ Parody posted: ${result.data.id}`);
+    saveUsedTweet(latestTweet.id);
+  } catch (err) {
+    log(`[${username}] ❌ Failed to post: ${err.message}`);
+  }
+}
+
+async function main() {
+  log("🚀 Bot started...");
+  for (const username of TWITTER_TARGETS) {
+    await runForAccount(username.trim());
+    log(`⏳ Waiting 15 minutes before next account...`);
+    await delay(DELAY_BETWEEN_ACCOUNTS);
+  }
+  log("✅ All done.");
+}
+
+main();
+
