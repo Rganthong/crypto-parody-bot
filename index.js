@@ -42,7 +42,7 @@ async function generateParody(text) {
     const response = await axios.post(
       'https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta',
       {
-        inputs: `Rewrite this crypto tweet as a short, wild, absurd parody with sarcasm: ${text}`,
+        inputs: `Turn this crypto tweet into an unhinged, extremely delusional shitpost full of sarcasm, absurdity, and CT (Crypto Twitter) energy. Keep it short and under 280 characters:\n\n"${text}"`,
         parameters: {
           max_new_tokens: 60,
           return_full_text: false
@@ -57,7 +57,7 @@ async function generateParody(text) {
     );
     const result = response.data[0]?.generated_text?.trim();
     return result || null;
-  } catch (err) {
+  } catch {
     return null;
   }
 }
@@ -74,8 +74,10 @@ async function processAccount(username) {
 
     const tweets = await client.v2.userTimeline(user.data.id, {
       max_results: 1,
-      exclude: "retweets,replies",
-      "tweet.fields": "created_at"
+      exclude: ['retweets', 'replies'],
+      tweet: {
+        fields: ['created_at']
+      }
     });
 
     const latest = tweets.data?.data?.[0];
