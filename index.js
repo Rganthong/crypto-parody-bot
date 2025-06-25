@@ -4,7 +4,7 @@ const dayjs = require("dayjs");
 require("dotenv").config();
 const { TwitterApi } = require("twitter-api-v2");
 
-const HF_API_KEY = process.env.HF_API_KEY;
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
 const TWITTER_TARGETS = process.env.TWITTER_TARGETS.split(",");
 
 const client = new TwitterApi({
@@ -73,82 +73,24 @@ async function generateParodyTweet(originalText) {
   for (let i = 1; i <= 5; i++) {
     try {
       const response = await axios.post(
-        "https://api-inference.huggingface.co/models/HuggingFaceH4/zephyr-7b-beta",
+        "https://api.groq.com/openai/v1/chat/completions",
         {
-          inputs: prompt,
-          parameters: {
-            max_new_tokens: 120,
-            temperature: 1.25,
-          },
+          model: "llama3-70b-8192",
+          messages: [
+            {
+              role: "user",
+              content: prompt,
+            },
+          ],
+          max_tokens: 120,
         },
         {
           headers: {
-            Authorization: `Bearer ${HF_API_KEY}`,
+            Authorization: `Bearer ${GROQ_API_KEY}`,
             "Content-Type": "application/json",
           },
         }
       );
 
-      const raw = response.data[0]?.generated_text || "";
-      const cleaned = raw.replace(prompt, "").replace(/[^\x00-\x7F]/g, "").replace(/\s+/g, " ").trim();
-      const truncated = smartTruncate(cleaned, 200);
-
-      if (truncated.length >= 30) {
-        log(`✅ Try ${i}: Passed - ${truncated.length} chars`);
-        return truncated;
-      } else {
-        log(`⚠️ Try ${i}: Skipped - too short (${truncated.length} chars)`);
-      }
-    } catch (err) {
-      log(`[AI] Try ${i} failed: ${err.message}`);
-      if (err.response?.status === 429) await delay(30000);
-    }
-  }
-
-  return null;
-}
-
-async function runForAccount(username) {
-  log(`[${username}] 🔍 Checking for latest tweet...`);
-  const latestTweet = await getLatestTweet(username);
-  if (!latestTweet) {
-    log(`[${username}] ⚠️ No tweet data found.`);
-    return;
-  }
-
-  const usedTweets = loadUsedTweets();
-  if (usedTweets.has(latestTweet.id)) {
-    log(`[${username}] ✅ No new tweet.`);
-    return;
-  }
-
-  const parody = await generateParodyTweet(latestTweet.text);
-  if (!parody) {
-    log(`[${username}] ⚠️ Parody generation failed.`);
-    return;
-  }
-
-  const tweetText = `${parody}\n\nhttps://twitter.com/${username}/status/${latestTweet.id}`;
-
-  try {
-    const result = await client.v2.tweet({ text: tweetText });
-    log(`[${username}] ✅ Parody posted: ${result.data.id}`);
-    saveUsedTweet(latestTweet.id);
-  } catch (err) {
-    log(`[${username}] ❌ Failed to post: ${err.message}`);
-  }
-}
-
-async function mainLoop() {
-  log("🚀 Bot started (loop mode)...");
-  while (true) {
-    for (const username of TWITTER_TARGETS) {
-      await runForAccount(username.trim());
-      log(`⏳ Waiting 900s before next account...`);
-      await delay(DEFAULT_DELAY);
-    }
-  }
-}
-
-mainLoop();
-
+      const raw = response.data.choices?.[0]?.message?.content || "";
+      const cleaned = raw.replace(/[^
