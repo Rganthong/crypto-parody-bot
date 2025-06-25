@@ -56,12 +56,15 @@ async function getLatestTweet(username) {
   }
 }
 
-function cleanTweet(text) {
-  return text
-    .replace(/[^\x00-\x7F]/g, "") // strip emoji/non-ASCII
-    .replace(/\s+/g, " ")         // normalize spacing
-    .trim()
-    .slice(0, 280);
+function smartTruncate(text, maxLength = 200) {
+  if (text.length <= maxLength) return text;
+  const cut = text.slice(0, maxLength);
+  const lastStop = Math.max(
+    cut.lastIndexOf(". "),
+    cut.lastIndexOf(", "),
+    cut.lastIndexOf(" ")
+  );
+  return cut.slice(0, lastStop !== -1 ? lastStop : maxLength).trim() + "…";
 }
 
 async function generateParodyTweet(originalText) {
@@ -87,13 +90,14 @@ async function generateParodyTweet(originalText) {
       );
 
       const raw = response.data[0]?.generated_text || "";
-      const cleaned = cleanTweet(raw.replace(prompt, ""));
+      const cleaned = raw.replace(prompt, "").replace(/[^\x00-\x7F]/g, "").replace(/\s+/g, " ").trim();
+      const truncated = smartTruncate(cleaned, 200);
 
-      if (cleaned.length >= 30) {
-        log(`✅ Try ${i}: Passed - ${cleaned.length} chars`);
-        return cleaned;
+      if (truncated.length >= 30) {
+        log(`✅ Try ${i}: Passed - ${truncated.length} chars`);
+        return truncated;
       } else {
-        log(`⚠️ Try ${i}: Skipped - too short`);
+        log(`⚠️ Try ${i}: Skipped - too short (${truncated.length} chars)`);
       }
     } catch (err) {
       log(`[AI] Try ${i} failed: ${err.message}`);
@@ -147,3 +151,4 @@ async function mainLoop() {
 }
 
 mainLoop();
+
