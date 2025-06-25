@@ -68,7 +68,7 @@ function smartTruncate(text, maxLength = 200) {
 }
 
 async function generateParodyTweet(originalText) {
-  const prompt = `Rewrite this tweet as a parody from a delusional crypto overlord. Make it insanely halu, full of fake insider knowledge, multidimensional conspiracies, and crypto mysticism. Style should resemble a hybrid of GCR ghostwriter, Bogdanoff, and a prophet who thinks they're controlling the market with astral wallets.\n"${originalText}"`;
+  const prompt = `Rewrite this tweet as a crypto parody full of delusional hopium, absurd insider tone, and fake confidence. Channel the voice of a market manipulator who pretends to control everything:\n"${originalText}"`;
 
   for (let i = 1; i <= 5; i++) {
     try {
@@ -80,6 +80,7 @@ async function generateParodyTweet(originalText) {
             { role: "user", content: prompt }
           ],
           max_tokens: 120,
+          temperature: 1.3
         },
         {
           headers: {
@@ -89,5 +90,69 @@ async function generateParodyTweet(originalText) {
         }
       );
 
-      const raw = response.data.choices?.[0]?.message?.content || "";
-      const cleaned = raw.replace(/[^
+      const raw = response.data.choices[0]?.message?.content || "";
+      const cleaned = raw
+        .replace(/[^\x00-\x7F]/g, "") // Remove emoji or non-ASCII
+        .replace(/\s+/g, " ")
+        .trim();
+      const truncated = smartTruncate(cleaned, 200);
+
+      if (truncated.length >= 30) {
+        log(`✅ Try ${i}: Passed - ${truncated.length} chars`);
+        return truncated;
+      } else {
+        log(`⚠️ Try ${i}: Skipped - too short (${truncated.length} chars)`);
+      }
+    } catch (err) {
+      log(`[AI] Try ${i} failed: ${err.message}`);
+      if (err.response?.status === 429) await delay(30000);
+    }
+  }
+
+  return null;
+}
+
+async function runForAccount(username) {
+  log(`[${username}] 🔍 Checking for latest tweet...`);
+  const latestTweet = await getLatestTweet(username);
+  if (!latestTweet) {
+    log(`[${username}] ⚠️ No tweet data found.`);
+    return;
+  }
+
+  const usedTweets = loadUsedTweets();
+  if (usedTweets.has(latestTweet.id)) {
+    log(`[${username}] ✅ No new tweet.`);
+    return;
+  }
+
+  const parody = await generateParodyTweet(latestTweet.text);
+  if (!parody) {
+    log(`[${username}] ⚠️ Parody generation failed.`);
+    return;
+  }
+
+  const tweetText = `${parody}\n\nhttps://twitter.com/${username}/status/${latestTweet.id}`;
+
+  try {
+    const result = await client.v2.tweet({ text: tweetText });
+    log(`[${username}] ✅ Parody posted: ${result.data.id}`);
+    saveUsedTweet(latestTweet.id);
+  } catch (err) {
+    log(`[${username}] ❌ Failed to post: ${err.message}`);
+  }
+}
+
+async function mainLoop() {
+  log("🚀 Bot started (loop mode)...");
+  while (true) {
+    for (const username of TWITTER_TARGETS) {
+      await runForAccount(username.trim());
+      log(`⏳ Waiting 900s before next account...`);
+      await delay(DEFAULT_DELAY);
+    }
+  }
+}
+
+mainLoop();
+
